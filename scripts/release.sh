@@ -2,44 +2,66 @@
 #
 # Release script for nixos-uconsole
 #
-# Usage:
-#   ./release.sh          # Auto-bump patch version (0.1.1 -> 0.1.2)
-#   ./release.sh 0.2.0    # Release specific version
-#   ./release.sh 1.0.0    # Major release
-#
-# What it does:
-#   1. Build the minimal SD images (CM4 and CM5)
-#   2. Push build artifacts to cachix
-#   3. Compress images with zstd
-#   4. Create GitHub release with notes
-#   5. Upload compressed images to release
+# Builds CM4 and CM5 SD images, pushes to cachix, compresses with zstd,
+# creates a GitHub release, and uploads the images.
 #
 set -euo pipefail
 
 REPO="nixos-uconsole/nixos-uconsole"
 CACHE="nixos-clockworkpi-uconsole"
+NIX_FLAGS=(--extra-experimental-features nix-command --extra-experimental-features flakes)
+
+get_latest_version() {
+  git tag -l 'v*' --sort=-version:refname 2>/dev/null | head -1 || echo "none"
+}
+
+show_help() {
+  local latest
+  latest=$(get_latest_version)
+  cat <<EOF
+nixos-uconsole release script
+
+  Latest version: ${latest}
+
+USAGE
+  ./scripts/release.sh <version>
+
+ARGUMENTS
+  <version>   The version to release (e.g. 1.1.0 or v1.1.0).
+              The v prefix is added automatically if omitted.
+
+WHAT IT DOES
+  1. Pull latest changes and update flake inputs
+  2. Build minimal SD images (CM4 and CM5)
+  3. Push build artifacts to cachix
+  4. Compress images with zstd
+  5. Create GitHub release with notes
+  6. Upload compressed images to the release
+
+EXAMPLES
+  ./scripts/release.sh 1.1.0
+  ./scripts/release.sh v2.0.0
+EOF
+}
+
+if [[ $# -eq 0 ]] || [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "help" ]]; then
+  show_help
+  exit 0
+fi
+
+NEXT_VERSION="v${1#v}"
+
+echo "==> Latest version: $(get_latest_version)"
+echo "==> Releasing ${NEXT_VERSION}..."
 
 echo "==> Pulling latest changes..."
 git pull
 
 echo "==> Updating flake inputs..."
-nix flake update
+nix "${NIX_FLAGS[@]}" flake update
 
-# Accept version as argument, or auto-bump patch
-if [ -n "${1:-}" ]; then
-  NEXT_VERSION="v${1#v}"  # Ensure v prefix
-else
-  # Get version from git tags, or default to 0.1.0
-  VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.1.0")
-  # Bump patch version: v0.1.0 -> v0.1.1
-  NEXT_VERSION=$(echo "$VERSION" | awk -F. '{$NF = $NF + 1;} 1' OFS=. | sed 's/^/v/' | sed 's/vv/v/')
-fi
-
-echo "==> Releasing ${NEXT_VERSION}..."
-
-# Build and process CM4 image
 echo "==> Building CM4 image..."
-nix build .#minimal-cm4 2>&1 | tee build-cm4.log
+nix "${NIX_FLAGS[@]}" build .#minimal-cm4 2>&1 | tee build-cm4.log
 
 echo "==> Pushing CM4 to cachix..."
 cachix push "$CACHE" result
@@ -50,9 +72,8 @@ CM4_IMG=$(find result/sd-image -name '*.img' -type f | head -1)
 [[ -z "$CM4_IMG" ]] && { echo "Error: No CM4 image found"; exit 1; }
 zstd -T0 "$CM4_IMG" -o "$CM4_IMG_NAME"
 
-# Build and process CM5 image
 echo "==> Building CM5 image..."
-nix build .#minimal-cm5 2>&1 | tee build-cm5.log
+nix "${NIX_FLAGS[@]}" build .#minimal-cm5 2>&1 | tee build-cm5.log
 
 echo "==> Pushing CM5 to cachix..."
 cachix push "$CACHE" result
